@@ -1,6 +1,6 @@
 """Moduł Cog dla Discorda obsługujący AI Mistrza Gry (Narrative Cog).
 Wyzwalany wyłącznie na kanale #stół-gry po oznaczeniu @Mistrz Gry lub użyciu komendy /next.
-Ignoruje pasywne rozmowy graczy, agreguje stan gry, wywołuje Gemini 2.0 Flash,
+Ignoruje pasywne rozmowy graczy, agreguje stan gry, wywołuje Gemini 3.7 Flash,
 dzieli odpowiedzi na bezpieczne akapity i dołącza dynamiczne przyciski rzutów kośćmi.
 """
 from __future__ import annotations
@@ -86,7 +86,7 @@ class NarrativeCog(commands.Cog):
         """
         Główna koordynacja tury narracyjnej:
         1. Budowanie pełnego kontekstu ze stanu Discorda (4 warstwy).
-        2. Wywołanie modelu Gemini 2.0 Flash.
+        2. Wywołanie modelu Gemini 3.7 Flash.
         3. Inteligentny podział odpowiedzi (>2000 znaków) na akapity.
         4. Sekwencyjne wysłanie wiadomości z dołączeniem NarrativeActionView do ostatniego fragmentu.
         """

@@ -580,7 +580,7 @@ def test_f9_character_embed_with_long_condition_list(sample_character: Character
 
 
 # ============================================================================
-# F10 Boundaries: Google Gemini 2.0 Flash Integration
+# F10 Boundaries: Google Gemini 3.7 Flash Integration
 # ============================================================================
 
 @pytest.mark.asyncio

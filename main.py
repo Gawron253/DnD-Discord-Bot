@@ -1,4 +1,4 @@
-"""Główny plik startowy bota Discord AI Dungeon Master (Pure Discord Architecture + Gemini 2.0 Flash)."""
+"""Główny plik startowy bota Discord AI Dungeon Master (Pure Discord Architecture + Gemini 3.7 Flash)."""
 from __future__ import annotations
 import asyncio
 import logging

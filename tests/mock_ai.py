@@ -28,7 +28,7 @@ class MockSafetyFilterError(MockGeminiError):
 
 
 class MockGeminiClient:
-    """Deterministic Mock AI client mimicking Google Gemini 2.0 Flash DM."""
+    """Deterministic Mock AI client mimicking Google Gemini 3.7 Flash DM."""
 
     ACTION_BUTTON_PATTERN = re.compile(r"\[ACTION_BUTTONS:\s*(\[.*?\]|\{.*?\}|.*?\])\s*\]", re.DOTALL)
 

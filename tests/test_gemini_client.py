@@ -1,4 +1,4 @@
-"""Unit and integration tests for Google Gemini 2.0 Flash Client (ai/gemini_client.py)."""
+"""Unit and integration tests for Google Gemini 3.7 Flash Client (ai/gemini_client.py)."""
 import pytest
 from ai.gemini_client import (
     GeminiClient,

@@ -738,7 +738,7 @@ def test_f9_dice_roll_embed_colors_success_green_failure_red():
 
 
 # ============================================================================
-# F10: Google Gemini 2.0 Flash Integration
+# F10: Google Gemini 3.7 Flash Integration
 # ============================================================================
 
 @pytest.mark.asyncio
