@@ -621,6 +621,7 @@ class MockInteractionResponse:
         self._deferred = False
         self._ephemeral = False
         self.sent_messages: List[MockMessage] = []
+        self.sent_modal: Optional[Any] = None
 
     def is_done(self) -> bool:
         return self._responded or self._deferred
@@ -628,6 +629,10 @@ class MockInteractionResponse:
     async def defer(self, ephemeral: bool = False, thinking: bool = True) -> None:
         self._deferred = True
         self._ephemeral = ephemeral
+
+    async def send_modal(self, modal: Any) -> None:
+        self._responded = True
+        self.sent_modal = modal
 
     async def send_message(
         self,

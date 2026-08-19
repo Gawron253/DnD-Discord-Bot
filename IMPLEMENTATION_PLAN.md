@@ -13,7 +13,7 @@ Stworzenie bezobsługowego, immersyjnego Mistrza Gry (Dungeon Master) opartego n
 1. **Aksjomat 1: Pure Discord State (Discord jako Jedyne Źródło Prawdy - SSOT)**:
    * Brak zewnętrznych baz danych SQL (PostgreSQL/MySQL), baz NoSQL (MongoDB/Redis) czy wektorowych baz danych (ChromaDB/Pinecone).
    * Wszystkie dane postaci, ekwipunek, dziennik zadań, kronika i reguły świata są przechowywane i wersjonowane bezpośrednio w kanałach, wątkach na forach oraz przypiętych wiadomościach Discorda.
-   * Format danych: Kolorowy Discord Rich Embed (widoczny dla gracza z paskami HP w ASCII) + ukryty w komentarzu HTML blok metadanych `<!-- DATA_JSON: {...} -->` (parsowany przez bota).
+   * Format danych: Kolorowy Discord Rich Embed (widoczny dla gracza z paskami HP w ASCII i tłem fabularnym *Backstory*) + niewidoczne w opisie metadane zakodowane steganograficznie w standardzie *Base-4 Unicode Zero-Width* (parsowane bezstratnie przez bota).
 2. **Aksjomat 2: Deterministyczny Podział Odpowiedzialności (Czysty Kod vs LLM)**:
    * **Czysty kod Python (0 tokenów AI, 0 halucynacji)**: Rzuty kośćmi d20, modyfikatory cech, ułatwienia/utrudnienia (Advantage/Disadvantage), obliczenia obrażeń i leczenia, punkty tymczasowe oraz ocena sukcesu/porażki względem DC są wykonywane lokalnie w bibliotece `d20`.
    * **Google Gemini 3.7 Flash**: Odpowiada wyłącznie za barwny opis fabularny, dialogi i odgrywanie postaci NPC, interpretując gotowe, matematycznie bezbłędne wyniki rzutów.
@@ -242,10 +242,11 @@ sequenceDiagram
 
 ## 8. Weryfikacja Jakościowa i Testy
 
-Projekt posiada 100% pokrycia testowego w architekturze Mock-First (317 testów):
+Projekt posiada 100% pokrycia testowego w architekturze Mock-First (446 testów):
 * **Tier 1: Feature Coverage (70 testów)** – poprawność wszystkich komend i modułów.
 * **Tier 2: Boundary & Corner Cases (70 testów)** – HP poniżej zera, ujemne wartości, puste fora, znaki specjalne, timeouty.
 * **Tier 3: Pairwise Interactions (15 testów)** – interakcje między rzutami kością, edycją HP i skanowaniem historii.
 * **Tier 4: E2E Campaign Scenarios (5 testów)** – kompletne scenariusze sesji RPG od wywołania do rozstrzygnięcia starcia.
 * **Tier 5: Adversarial & Stress (28 testów)** – odporność na złośliwe dane, brak uprawnień i uszkodzone bloki JSON.
+* **Character Creation Suite & Steganography Tests (129 testów)** – testy formularza modal, generatora AI Gemini, selektywnej edycji postaci oraz bezstratnego ukrywania danych zero-width.
 * **Unit & Integration (129 testów)** – testy silnika kości, bazy Discorda i klienta Gemini 3.7 Flash.

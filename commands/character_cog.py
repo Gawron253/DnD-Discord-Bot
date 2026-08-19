@@ -250,6 +250,195 @@ class CharacterCog(commands.Cog):
         embed.add_field(name="Punkty Życia", value=f"**{char.current_hp}/{char.max_hp} HP**", inline=True)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="create-character", description="Otwiera interaktywny formularz tworzenia nowej postaci D&D 5e")
+    async def create_character(self, interaction: discord.Interaction):
+        """Otwiera 5-polowy modal tworzenia postaci z automatycznym przeliczaniem reguł D&D 5e."""
+        from discord_ui.views import CharacterCreateModal
+        modal = CharacterCreateModal()
+        await interaction.response.send_modal(modal)
+
+    @app_commands.command(name="generate-character", description="Generuje kompletną postać D&D 5e za pomocą sztucznej inteligencji")
+    @app_commands.describe(
+        opis="Opis lub koncept postaci (np. Młody elficki mag szukający starożytnych tajemnic)"
+    )
+    async def generate_character_cmd(
+        self,
+        interaction: discord.Interaction,
+        opis: str
+    ):
+        """Generuje zbalansowaną postać D&D 5e na 1 poziomie za pomocą Gemini AI i tworzy wątek na forum."""
+        await interaction.response.defer(ephemeral=False)
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("❌ Komenda dostępna wyłącznie na serwerze.")
+            return
+
+        forum = find_forum_channel(guild, "karty-postaci")
+        if not forum:
+            await interaction.followup.send("❌ Nie znaleziono forum `#karty-postaci`. Użyj `/setup-campaign`.")
+            return
+
+        from ai.gemini_client import generate_character as ai_generate_character
+        try:
+            char_data = await ai_generate_character(opis)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Wystąpił błąd podczas generowania postaci przez AI: {e}")
+            return
+
+        char_data["discord_user_id"] = str(interaction.user.id)
+        
+        try:
+            char = CharacterModel(**char_data)
+        except Exception:
+            from discord_ui.views import compute_5e_character
+            char = compute_5e_character(
+                name=char_data.get("name", "Wygenerowany Bohater"),
+                race_and_class=f"{char_data.get('race', 'Człowiek')} {char_data.get('character_class', 'Wojownik')}",
+                stats_raw=str(char_data.get("stats", "")),
+                backstory=char_data.get("backstory") or char_data.get("bio"),
+                user_id=str(interaction.user.id)
+            )
+
+        thread, msg, created_char = await get_or_create_character_sheet(forum, str(interaction.user.id), character=char)
+        if created_char.name != char.name or created_char.character_class != char.character_class:
+            await update_character_sheet(thread, char, reason=f"Wygenerowano nową postać przez AI ({opis[:50]}...)")
+            try:
+                await thread.edit(name=f"🛡️ {char.name} ({interaction.user.id})")
+            except Exception:
+                pass
+
+        embed = create_character_sheet_embed(char)
+        view = CharacterSheetView(character=char)
+        await interaction.followup.send(
+            content=f"✨ **AI pomyślnie wygenerowało postać dla {interaction.user.display_name}!** Karta zapisana w wątku: #{thread.name}",
+            embed=embed,
+            view=view
+        )
+
+    @app_commands.command(name="character-edit", description="Edytuje parametry karty postaci z rejestracją audytu na forum")
+    @app_commands.describe(
+        imie="Nowe imię postaci",
+        klasa="Nowa klasa postaci",
+        rasa="Nowa rasa postaci",
+        poziom="Nowy poziom postaci",
+        max_hp="Nowa maksymalna liczba punktów życia",
+        ac="Nowa klasa pancerza (AC)",
+        speed="Nowa szybkość postaci (ft)",
+        str_stat="Wartość Siły (STR)",
+        dex_stat="Wartość Zręczności (DEX)",
+        con_stat="Wartość Kondycji (CON)",
+        int_stat="Wartość Inteligencji (INT)",
+        wis_stat="Wartość Mądrości (WIS)",
+        cha_stat="Wartość Charyzmy (CHA)",
+        historia="Nowa historia / opis postaci (Backstory)",
+        postac="Gracz, którego postać edytujesz (domyślnie Ty)"
+    )
+    async def character_edit_cmd(
+        self,
+        interaction: discord.Interaction,
+        imie: Optional[str] = None,
+        klasa: Optional[str] = None,
+        rasa: Optional[str] = None,
+        poziom: Optional[int] = None,
+        max_hp: Optional[int] = None,
+        ac: Optional[int] = None,
+        speed: Optional[int] = None,
+        str_stat: Optional[int] = None,
+        dex_stat: Optional[int] = None,
+        con_stat: Optional[int] = None,
+        int_stat: Optional[int] = None,
+        wis_stat: Optional[int] = None,
+        cha_stat: Optional[int] = None,
+        historia: Optional[str] = None,
+        postac: Optional[discord.User] = None
+    ):
+        """Umożliwia selektywną edycję parametrów postaci bez naruszania ekwipunku, złota czy historii."""
+        await interaction.response.defer(ephemeral=False)
+        resolved = await self._resolve_character(interaction, postac)
+        if not resolved:
+            return
+
+        _, thread, _, char, user = resolved
+        changed = []
+
+        if imie and imie.strip():
+            char.name = imie.strip()
+            changed.append(f"Imię -> {char.name}")
+            try:
+                await thread.edit(name=f"🛡️ {char.name} ({char.discord_user_id})")
+            except Exception:
+                pass
+
+        if klasa and klasa.strip():
+            char.character_class = klasa.strip()
+            changed.append(f"Klasa -> {char.character_class}")
+
+        if rasa and rasa.strip():
+            char.race = rasa.strip()
+            changed.append(f"Rasa -> {char.race}")
+
+        if poziom is not None:
+            char.level = max(1, poziom)
+            char.proficiency_bonus = 2 + (char.level - 1) // 4
+            changed.append(f"Poziom -> {char.level}")
+
+        if max_hp is not None:
+            char.max_hp = max(1, max_hp)
+            char.current_hp = min(char.current_hp, char.max_hp)
+            changed.append(f"Max HP -> {char.max_hp}")
+
+        if ac is not None:
+            char.armor_class = max(1, ac)
+            changed.append(f"AC -> {char.armor_class}")
+
+        if speed is not None:
+            char.speed = max(0, speed)
+            changed.append(f"Speed -> {char.speed} ft")
+
+        if str_stat is not None:
+            char.stats.strength = str_stat
+            changed.append(f"STR -> {str_stat}")
+
+        if dex_stat is not None:
+            char.stats.dexterity = dex_stat
+            changed.append(f"DEX -> {dex_stat}")
+
+        if con_stat is not None:
+            char.stats.constitution = con_stat
+            changed.append(f"CON -> {con_stat}")
+
+        if int_stat is not None:
+            char.stats.intelligence = int_stat
+            changed.append(f"INT -> {int_stat}")
+
+        if wis_stat is not None:
+            char.stats.wisdom = wis_stat
+            changed.append(f"WIS -> {wis_stat}")
+
+        if cha_stat is not None:
+            char.stats.charisma = cha_stat
+            changed.append(f"CHA -> {cha_stat}")
+
+        if historia and historia.strip():
+            char.backstory = historia.strip()
+            char.bio = char.backstory
+            changed.append("Historia/Bio")
+
+        if not changed:
+            await interaction.followup.send("⚠️ Nie podano żadnych pól do modyfikacji.")
+            return
+
+        reason_str = f"Edycja postaci: {', '.join(changed)}"
+        await update_character_sheet(thread, char, reason=reason_str)
+
+        embed = create_character_sheet_embed(char)
+        view = CharacterSheetView(character=char)
+        await interaction.followup.send(
+            content=f"📝 **Zaktualizowano kartę postaci gracza {user.display_name}!** Zmiany: *{', '.join(changed)}*",
+            embed=embed,
+            view=view
+        )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CharacterCog(bot))

@@ -77,6 +77,12 @@ class CharacterModel(BaseModel):
     gold_gp: int = 10
     conditions: List[str] = Field(default_factory=list)
     
+    backstory: Optional[str] = None
+    bio: Optional[str] = None
+    spells: List[str] = Field(default_factory=list)
+    background: Optional[str] = None
+    alignment: Optional[str] = None
+    
     avatar_url: Optional[str] = None
     pinned_sheet_message_id: Optional[str] = None
 

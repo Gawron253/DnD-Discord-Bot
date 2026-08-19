@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -20,7 +21,7 @@ except ImportError:
     types = None
 
 from config.settings import settings
-from config.prompts import DUNGEON_MASTER_SYSTEM_PROMPT
+from config.prompts import DUNGEON_MASTER_SYSTEM_PROMPT, CHARACTER_GENERATOR_SYSTEM_PROMPT
 from ai.message_splitter import split_long_message
 
 logger = logging.getLogger("GeminiClient")
@@ -130,9 +131,15 @@ def build_4layer_prompt(
 
     # 4. Warstwa 4: Zdarzenia i deklaracje graczy od poprzedniej tury
     events_text = events.strip() if events else "*Brak nowych deklaracji graczy.*"
-    layer_4 = f"=== [WARSTWA 4: NOWE ZDARZENIA, DEKLARACJE GRACZY I RZUTY KOŚĆMI] ===\n{events_text}"
+    layer_4 = f"=== [WARSTWA 4: HISTORIA SESJI, NOWE ZDARZENIA, DEKLARACJE GRACZY I RZUTY KOŚĆMI] ===\n{events_text}"
 
-    context_prompt = f"{layer_2}\n\n{layer_3}\n\n{layer_4}\n\n=== [POLECENIE DLA MISTRZA GRY] ===\nOpisz konsekwencje powyższych deklaracji i rzutów, rozwiń scenę i zakończ pytaniem do drużyny oraz odpowiednimi przyciskami rzutów [ACTION_BUTTONS], jeśli to konieczne."
+    context_prompt = (
+        f"{layer_2}\n\n{layer_3}\n\n{layer_4}\n\n"
+        f"=== [INSTRUKCJE DLA MISTRZA GRY] ===\n"
+        f"1. Jeśli w Warstwie 4 znajduje się rzut kością (sukces lub porażka), opisz NATYCHMIAST efekt tego rzutu (co bohater dostrzegł, czy zdołał się ukryć/obronić/wyważyć drzwi). Zgodnie z wynikiem rzutu rozstrzygnij tę akcję i NIE każ graczowi powtarzać tego samego rzutu!\n"
+        f"2. Płynnie kontynuuj scenę i rozwijaj sytuację na podstawie poprzedniej narracji (nie zaczynaj nowej opowieści od zera, chyba że nastąpiła wyraźna zmiana lokacji/czasu).\n"
+        f"3. Zakończ turę pytaniem 'Co robicie?' i zaproponuj kolejne opcje działania z przyciskami [ACTION_BUTTONS] dla NOWYCH możliwych testów (np. Inicjatywa, Atak, Skradanie, Otwieranie zamka)."
+    )
 
     return system_instruction, context_prompt
 
@@ -187,7 +194,7 @@ class GeminiClient:
         include_thoughts: Optional[bool] = None,
         mock_client: Optional[Any] = None
     ):
-        self.api_key = api_key or settings.gemini_api_key or os.getenv("GEMINI_API_KEY", "")
+        self.api_key = api_key if api_key is not None else (settings.gemini_api_key or os.getenv("GEMINI_API_KEY", ""))
         self.model = model or settings.default_ai_model or "gemini-3.7-flash"
         self.temperature = temperature if temperature is not None else settings.gemini_temperature
         self.thinking_budget = thinking_budget if thinking_budget is not None else settings.gemini_thinking_budget
@@ -223,43 +230,64 @@ class GeminiClient:
         if self.mock_client is not None:
             return await self.mock_client.generate_narrative(context_prompt, system_prompt)
 
-        # 2. Rzeczywiste wywołanie Google Gemini 3.7 Flash przez google-genai SDK
+        # 2. Rzeczywiste wywołanie Google Gemini przez google-genai SDK
         if self._genai_client is not None and GENAI_AVAILABLE:
-            try:
-                full_system = system_prompt or DUNGEON_MASTER_SYSTEM_PROMPT
-                if "[ACTION_BUTTONS" not in full_system:
-                    full_system = f"{full_system}\n\n{ACTION_BUTTONS_SYSTEM_INSTRUCTION}"
+            models_to_try = [self.model]
+            for fallback_cand in ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]:
+                if fallback_cand not in models_to_try:
+                    models_to_try.append(fallback_cand)
 
-                # Konfiguracja ThinkingConfig dla Gemini 3.7 Flash
-                thinking_config = None
-                if types and hasattr(types, "ThinkingConfig"):
-                    t_budget = self.thinking_budget if self.thinking_budget is not None else settings.gemini_thinking_budget
-                    inc_thoughts = self.include_thoughts if self.include_thoughts is not None else settings.gemini_include_thoughts
-                    if t_budget is not None:
-                        thinking_config = types.ThinkingConfig(
-                            thinking_budget=t_budget,
-                            include_thoughts=inc_thoughts
+            last_error = None
+            for current_model in models_to_try:
+                for attempt in range(2):
+                    try:
+                        full_system = system_prompt or DUNGEON_MASTER_SYSTEM_PROMPT
+                        if "[ACTION_BUTTONS" not in full_system:
+                            full_system = f"{full_system}\n\n{ACTION_BUTTONS_SYSTEM_INSTRUCTION}"
+
+                        # Konfiguracja ThinkingConfig dla modeli wspierających (np. Gemini 3.x / 2.5)
+                        thinking_config = None
+                        if ("3." in current_model or "2.5" in current_model) and types and hasattr(types, "ThinkingConfig"):
+                            t_budget = self.thinking_budget if self.thinking_budget is not None else settings.gemini_thinking_budget
+                            inc_thoughts = self.include_thoughts if self.include_thoughts is not None else settings.gemini_include_thoughts
+                            if t_budget is not None:
+                                thinking_config = types.ThinkingConfig(
+                                    thinking_budget=t_budget,
+                                    include_thoughts=inc_thoughts
+                                )
+
+                        config = types.GenerateContentConfig(
+                            system_instruction=full_system,
+                            temperature=self.temperature,
+                            safety_settings=get_rpg_safety_settings(),
+                            thinking_config=thinking_config
                         )
 
-                config = types.GenerateContentConfig(
-                    system_instruction=full_system,
-                    temperature=self.temperature,
-                    safety_settings=get_rpg_safety_settings(),
-                    thinking_config=thinking_config
-                )
+                        # Asynchroniczne wywołanie Gemini API
+                        response = await self._genai_client.aio.models.generate_content(
+                            model=current_model,
+                            contents=context_prompt,
+                            config=config
+                        )
 
-                # Asynchroniczne wywołanie Gemini 3.7 Flash
-                response = await self._genai_client.aio.models.generate_content(
-                    model=self.model,
-                    contents=context_prompt,
-                    config=config
-                )
+                        raw_text = response.text or ""
+                        if raw_text:
+                            return extract_action_buttons(raw_text)
 
-                raw_text = response.text or ""
-                return extract_action_buttons(raw_text)
+                    except Exception as e:
+                        last_error = e
+                        err_str = str(e)
+                        logger.warning(f"Próba {attempt+1} z modelem {current_model} napotkała błąd: {e}")
+                        # W przypadku przeciążenia serwera (503 / 429) poczekaj przed ponowieniem
+                        if "503" in err_str or "429" in err_str or "unavailable" in err_str.lower():
+                            await asyncio.sleep(1.0)
+                            continue
+                        else:
+                            # Inny błąd (np. brak uprawnień 403 do danego modelu) - wypróbuj kolejny model z listy
+                            break
 
-            except Exception as e:
-                logger.error(f"Błąd podczas generowania narracji przez Gemini API ({self.model}): {e}. Używam fallbacku.")
+            if last_error:
+                logger.error(f"Wszystkie próby wywołania modeli Gemini zakończone błędem: {last_error}. Używam fallbacku.")
 
         # 3. Deterministic Offline Fallback dla środowisk bez klucza Gemini / offline
         return self._generate_offline_fallback(context_prompt)
@@ -310,6 +338,250 @@ class GeminiClient:
 
         return text, buttons
 
+    def _generate_offline_character(self, prompt: str) -> Dict[str, Any]:
+        """Generuje deterministyczną, poprawną postać D&D 5e Level 1 dla środowisk offline."""
+        p_lower = prompt.lower()
+        if "mag" in p_lower or "czarodziej" in p_lower or "wizard" in p_lower or "czar" in p_lower:
+            return {
+                "name": "Elora Gwiazda Zmierzchu",
+                "race": "Elf",
+                "character_class": "Mag",
+                "level": 1,
+                "current_hp": 8,
+                "max_hp": 8,
+                "temp_hp": 0,
+                "armor_class": 12,
+                "speed": 30,
+                "proficiency_bonus": 2,
+                "stats": {
+                    "strength": 8,
+                    "dexterity": 14,
+                    "constitution": 14,
+                    "intelligence": 16,
+                    "wisdom": 12,
+                    "charisma": 10
+                },
+                "spell_slots": {
+                    "level_1": 2,
+                    "level_1_max": 2,
+                    "level_2": 0,
+                    "level_2_max": 0,
+                    "level_3": 0,
+                    "level_3_max": 0
+                },
+                "inventory": [
+                    {"name": "Kostur czarodzieja", "quantity": 1, "item_type": "weapon"},
+                    {"name": "Księga czarów", "quantity": 1, "item_type": "equipment"},
+                    {"name": "Zestaw uczonego", "quantity": 1, "item_type": "equipment"}
+                ],
+                "spells": ["Magiczny Pocisk", "Tarcza", "Promień Mrozu", "Światło"],
+                "gold_gp": 20,
+                "conditions": [],
+                "backstory": "Urodzona w odległych lasach elfiego królestwa, od dzieciństwa wykazywała niezwykły talent do splatania magii arkanów. Opuściła rodzinną wieżę, by badać starożytne ruiny i odkrywać zapomnianą wiedzę.",
+                "bio": "Urodzona w odległych lasach elfiego królestwa, od dzieciństwa wykazywała niezwykły talent do splatania magii arkanów. Opuściła rodzinną wieżę, by badać starożytne ruiny i odkrywać zapomnianą wiedzę."
+            }
+        elif "łotr" in p_lower or "rogue" in p_lower or "złodziej" in p_lower or "skradan" in p_lower:
+            return {
+                "name": "Kael Cichy Krok",
+                "race": "Niziołek",
+                "character_class": "Łotr",
+                "level": 1,
+                "current_hp": 10,
+                "max_hp": 10,
+                "temp_hp": 0,
+                "armor_class": 14,
+                "speed": 25,
+                "proficiency_bonus": 2,
+                "stats": {
+                    "strength": 10,
+                    "dexterity": 16,
+                    "constitution": 14,
+                    "intelligence": 13,
+                    "wisdom": 12,
+                    "charisma": 10
+                },
+                "spell_slots": {
+                    "level_1": 0,
+                    "level_1_max": 0,
+                    "level_2": 0,
+                    "level_2_max": 0,
+                    "level_3": 0,
+                    "level_3_max": 0
+                },
+                "inventory": [
+                    {"name": "Rapier", "quantity": 1, "item_type": "weapon"},
+                    {"name": "Krótki łuk", "quantity": 1, "item_type": "weapon"},
+                    {"name": "Narzędzia złodziejskie", "quantity": 1, "item_type": "equipment"},
+                    {"name": "Zbroja skórzana", "quantity": 1, "item_type": "armor"}
+                ],
+                "spells": [],
+                "gold_gp": 25,
+                "conditions": [],
+                "backstory": "Wychowany w krętych zaułkach portowego miasta, nauczył się, że zręczne palce i cichy krok są cenniejsze niż całe złoto świata. Teraz szuka fortuny w niebezpiecznych wyprawach.",
+                "bio": "Wychowany w krętych zaułkach portowego miasta, nauczył się, że zręczne palce i cichy krok są cenniejsze niż całe złoto świata. Teraz szuka fortuny w niebezpiecznych wyprawach."
+            }
+        elif "krasnolud" in p_lower or "barbar" in p_lower or "topór" in p_lower:
+            return {
+                "name": "Balgor Żelazny Topór",
+                "race": "Krasnolud",
+                "character_class": "Wojownik",
+                "level": 1,
+                "current_hp": 13,
+                "max_hp": 13,
+                "temp_hp": 0,
+                "armor_class": 15,
+                "speed": 25,
+                "proficiency_bonus": 2,
+                "stats": {
+                    "strength": 16,
+                    "dexterity": 12,
+                    "constitution": 16,
+                    "intelligence": 10,
+                    "wisdom": 12,
+                    "charisma": 8
+                },
+                "spell_slots": {
+                    "level_1": 0,
+                    "level_1_max": 0,
+                    "level_2": 0,
+                    "level_2_max": 0,
+                    "level_3": 0,
+                    "level_3_max": 0
+                },
+                "inventory": [
+                    {"name": "Topór bojowy", "quantity": 1, "item_type": "weapon"},
+                    {"name": "Tarcza", "quantity": 1, "item_type": "armor"},
+                    {"name": "Kolczuga", "quantity": 1, "item_type": "armor"},
+                    {"name": "Plecak podróżny", "quantity": 1, "item_type": "equipment"}
+                ],
+                "spells": [],
+                "gold_gp": 15,
+                "conditions": [],
+                "backstory": "Dumny wojownik z klanu Żelaznego Szczytu. Po upadku jego rodzinnej twierdzy poprzysiągł odzyskać rodowe dziedzictwo i pomścić poległych towarzyszy broni.",
+                "bio": "Dumny wojownik z klanu Żelaznego Szczytu. Po upadku jego rodzinnej twierdzy poprzysiągł odzyskać rodowe dziedzictwo i pomścić poległych towarzyszy broni."
+            }
+        else:
+            return {
+                "name": "Valerius Mężny",
+                "race": "Człowiek",
+                "character_class": "Paladyn",
+                "level": 1,
+                "current_hp": 12,
+                "max_hp": 12,
+                "temp_hp": 0,
+                "armor_class": 16,
+                "speed": 30,
+                "proficiency_bonus": 2,
+                "stats": {
+                    "strength": 16,
+                    "dexterity": 10,
+                    "constitution": 14,
+                    "intelligence": 10,
+                    "wisdom": 12,
+                    "charisma": 14
+                },
+                "spell_slots": {
+                    "level_1": 0,
+                    "level_1_max": 0,
+                    "level_2": 0,
+                    "level_2_max": 0,
+                    "level_3": 0,
+                    "level_3_max": 0
+                },
+                "inventory": [
+                    {"name": "Miecz długi", "quantity": 1, "item_type": "weapon"},
+                    {"name": "Tarcza", "quantity": 1, "item_type": "armor"},
+                    {"name": "Kolczuga", "quantity": 1, "item_type": "armor"},
+                    {"name": "Święty symbol", "quantity": 1, "item_type": "equipment"}
+                ],
+                "spells": [],
+                "gold_gp": 15,
+                "conditions": [],
+                "backstory": "Młody rycerz zakonu Świetlistego Brzasku. Wyruszył w świat z przysięgą obrony niewinnych i niesienia sprawiedliwości w najmroczniejszych zakątkach krainy.",
+                "bio": "Młody rycerz zakonu Świetlistego Brzasku. Wyruszył w świat z przysięgą obrony niewinnych i niesienia sprawiedliwości w najmroczniejszych zakątkach krainy."
+            }
+
+    async def generate_character(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generuje zbalansowaną postać D&D 5e na podstawie promptu użytkownika.
+        Zwraca sparsowany słownik danych zgodny z CharacterModel.
+        """
+        # 1. Sprawdź zarejestrowany mock testowy
+        if self.mock_client is not None:
+            if hasattr(self.mock_client, "generate_character"):
+                return await self.mock_client.generate_character(prompt)
+            elif hasattr(self.mock_client, "generate_narrative"):
+                text, _ = await self.mock_client.generate_narrative(prompt, system_prompt)
+                try:
+                    return json.loads(text)
+                except Exception:
+                    pass
+
+        # 2. Rzeczywiste wywołanie Gemini API
+        if self._genai_client is not None and GENAI_AVAILABLE:
+            models_to_try = [self.model]
+            for fallback_cand in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                if fallback_cand not in models_to_try:
+                    models_to_try.append(fallback_cand)
+
+            last_error = None
+            for current_model in models_to_try:
+                for attempt in range(2):
+                    try:
+                        full_system = system_prompt or CHARACTER_GENERATOR_SYSTEM_PROMPT
+
+                        thinking_config = None
+                        if ("3.7" in current_model or "2.5" in current_model) and types and hasattr(types, "ThinkingConfig"):
+                            t_budget = self.thinking_budget if self.thinking_budget is not None else settings.gemini_thinking_budget
+                            inc_thoughts = self.include_thoughts if self.include_thoughts is not None else settings.gemini_include_thoughts
+                            if t_budget is not None:
+                                thinking_config = types.ThinkingConfig(
+                                    thinking_budget=t_budget,
+                                    include_thoughts=inc_thoughts
+                                )
+
+                        config = types.GenerateContentConfig(
+                            system_instruction=full_system,
+                            temperature=self.temperature,
+                            safety_settings=get_rpg_safety_settings(),
+                            thinking_config=thinking_config
+                        )
+
+                        response = await self._genai_client.aio.models.generate_content(
+                            model=current_model,
+                            contents=prompt,
+                            config=config
+                        )
+
+                        raw_text = (response.text or "").strip()
+                        if raw_text.startswith("```"):
+                            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+                            raw_text = re.sub(r"\s*```$", "", raw_text)
+
+                        parsed = json.loads(raw_text)
+                        if isinstance(parsed, dict):
+                            return parsed
+
+                    except Exception as e:
+                        last_error = e
+                        err_str = str(e)
+                        logger.warning(f"Próba {attempt+1} generowania postaci z modelem {current_model} napotkała błąd: {e}")
+                        if "503" in err_str or "429" in err_str or "unavailable" in err_str.lower():
+                            await asyncio.sleep(1.0)
+                            continue
+                        else:
+                            break
+
+            if last_error:
+                logger.error(f"Generowanie postaci przez Gemini zakończone błędem: {last_error}. Używam fallbacku.")
+
+        # 3. Deterministic offline fallback
+        return self._generate_offline_character(prompt)
+
 
 # Instancja globalnego klienta domyślnego
 default_gemini_client = GeminiClient()
@@ -325,3 +597,15 @@ async def generate_narrative(
     """
     active_client = client or default_gemini_client
     return await active_client.generate_narrative(context_prompt, system_prompt)
+
+
+async def generate_character(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    client: Optional[GeminiClient] = None
+) -> Dict[str, Any]:
+    """
+    Główny interfejs generowania postaci przez AI.
+    """
+    active_client = client or default_gemini_client
+    return await active_client.generate_character(prompt, system_prompt)

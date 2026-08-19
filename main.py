@@ -70,7 +70,13 @@ class DndAIBot(commands.Bot):
         try:
             guild_id = settings.discord_guild_id.strip() if settings.discord_guild_id else None
             if guild_id and guild_id.isdigit():
-                guild_obj = discord.Object(id=int(guild_id))
+                target_id = int(guild_id)
+                guild_obj = discord.Object(id=target_id)
+                if not self.get_guild(target_id):
+                    logger.warning(
+                        f"⚠️ Bot nie znajduje się jeszcze na serwerze o ID {guild_id} (obecna liczba serwerów: {len(self.guilds)})!\n"
+                        f"   👉 Zaproś bota na serwer przez OAuth2 URL z uprawnieniami 'bot' oraz 'applications.commands'."
+                    )
                 self.tree.copy_global_to(guild=guild_obj)
                 synced = await self.tree.sync(guild=guild_obj)
                 logger.info(f"⚡ Zsynchronizowano {len(synced)} komend slash dla serwera ID: {guild_id}")

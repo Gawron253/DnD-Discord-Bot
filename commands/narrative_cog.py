@@ -71,12 +71,20 @@ def is_narrative_trigger(message: discord.Message, bot_user: Optional[discord.Cl
     return False
 
 
+import asyncio
+
 class NarrativeCog(commands.Cog):
     """Cog odpowiedzialny za narrację AI Dungeon Mastera na kanale #stół-gry."""
 
     def __init__(self, bot: commands.Bot, gemini_client: Optional[GeminiClient] = None):
         self.bot = bot
         self.gemini_client = gemini_client or default_gemini_client
+        self._channel_locks: Dict[int, asyncio.Lock] = {}
+
+    def _get_lock(self, channel_id: int) -> asyncio.Lock:
+        if channel_id not in self._channel_locks:
+            self._channel_locks[channel_id] = asyncio.Lock()
+        return self._channel_locks[channel_id]
 
     async def execute_narrative_turn(
         self,
@@ -90,71 +98,73 @@ class NarrativeCog(commands.Cog):
         3. Inteligentny podział odpowiedzi (>2000 znaków) na akapity.
         4. Sekwencyjne wysłanie wiadomości z dołączeniem NarrativeActionView do ostatniego fragmentu.
         """
-        guild = getattr(channel, "guild", None)
-        bot_user = self.bot.user or getattr(interaction, "client", self.bot).user
+        lock = self._get_lock(channel.id)
+        async with lock:
+            guild = getattr(channel, "guild", None)
+            bot_user = self.bot.user or getattr(interaction, "client", self.bot).user
 
-        # 1. Złożenie 4-warstwowego kontekstu kampanii
-        system_prompt, context_prompt = await build_full_dm_context(
-            guild=guild,
-            table_channel=channel,
-            bot_user=bot_user
-        )
-
-        logger.info(f"Rozpoczynam generowanie narracji AI dla kanału {getattr(channel, 'name', 'unknown')}")
-
-        # 2. Wywołanie Gemini AI
-        try:
-            narrative_text, action_buttons = await self.gemini_client.generate_narrative(
-                context_prompt=context_prompt,
-                system_prompt=system_prompt
+            # 1. Złożenie 4-warstwowego kontekstu kampanii
+            system_prompt, context_prompt = await build_full_dm_context(
+                guild=guild,
+                table_channel=channel,
+                bot_user=bot_user
             )
-        except Exception as e:
-            logger.error(f"Błąd podczas wywołania Gemini: {e}")
-            narrative_text = (
-                "**Mistrz Gry:** Cienie w komnacie gęstnieją na ułamek sekundy, "
-                "jakby sama magia splotu zawahała się w odpowiedzi na wasze czyny...\n\n*Co robicie dalej?*"
-            )
-            action_buttons = [
-                {"label": "Rzut na Percepcję (WIS +2)", "formula": "1d20+2", "reason": "Percepcja", "dc": 12}
-            ]
 
-        # 3. Podział na bezpieczne fragmenty (<1900 znaków)
-        chunks = split_long_message(narrative_text, limit=1900)
-        if not chunks:
-            chunks = ["*Mistrz Gry przygląda się wam w milczeniu...*"]
+            logger.info(f"Rozpoczynam generowanie narracji AI dla kanału {getattr(channel, 'name', 'unknown')}")
 
-        view = NarrativeActionView(action_buttons) if action_buttons else None
+            # 2. Wywołanie Gemini AI
+            try:
+                narrative_text, action_buttons = await self.gemini_client.generate_narrative(
+                    context_prompt=context_prompt,
+                    system_prompt=system_prompt
+                )
+            except Exception as e:
+                logger.error(f"Błąd podczas wywołania Gemini: {e}")
+                narrative_text = (
+                    "**Mistrz Gry:** Cienie w komnacie gęstnieją na ułamek sekundy, "
+                    "jakby sama magia splotu zawahała się w odpowiedzi na wasze czyny...\n\n*Co robicie dalej?*"
+                )
+                action_buttons = [
+                    {"label": "Rzut na Percepcję (WIS +2)", "formula": "1d20+2", "reason": "Percepcja", "dc": 12}
+                ]
 
-        # 4. Sekwencyjne doręczenie wiadomości
-        if interaction and not interaction.response.is_done():
-            # Interakcja jeszcze nie odpowiedziana
-            if len(chunks) == 1:
-                await interaction.response.send_message(chunks[0], view=view)
-            else:
-                await interaction.response.send_message(chunks[0])
-                for i, chunk in enumerate(chunks[1:], start=1):
-                    if i == len(chunks) - 1:
-                        await channel.send(chunk, view=view)
-                    else:
-                        await channel.send(chunk)
-        elif interaction and interaction.response.is_done():
-            # Interakcja była odroczona (defer)
-            if len(chunks) == 1:
-                await interaction.followup.send(chunks[0], view=view)
-            else:
-                await interaction.followup.send(chunks[0])
-                for i, chunk in enumerate(chunks[1:], start=1):
-                    if i == len(chunks) - 1:
-                        await channel.send(chunk, view=view)
-                    else:
-                        await channel.send(chunk)
-        else:
-            # Wywołanie z on_message
-            for i, chunk in enumerate(chunks):
-                if i == len(chunks) - 1:
-                    await channel.send(chunk, view=view)
+            # 3. Podział na bezpieczne fragmenty (<1900 znaków)
+            chunks = split_long_message(narrative_text, limit=1900)
+            if not chunks:
+                chunks = ["*Mistrz Gry przygląda się wam w milczeniu...*"]
+
+            view = NarrativeActionView(action_buttons) if action_buttons else None
+
+            # 4. Sekwencyjne doręczenie wiadomości
+            if interaction and not interaction.response.is_done():
+                # Interakcja jeszcze nie odpowiedziana
+                if len(chunks) == 1:
+                    await interaction.response.send_message(chunks[0], view=view)
                 else:
-                    await channel.send(chunk)
+                    await interaction.response.send_message(chunks[0])
+                    for i, chunk in enumerate(chunks[1:], start=1):
+                        if i == len(chunks) - 1:
+                            await channel.send(chunk, view=view)
+                        else:
+                            await channel.send(chunk)
+            elif interaction and interaction.response.is_done():
+                # Interakcja była odroczona (defer)
+                if len(chunks) == 1:
+                    await interaction.followup.send(chunks[0], view=view)
+                else:
+                    await interaction.followup.send(chunks[0])
+                    for i, chunk in enumerate(chunks[1:], start=1):
+                        if i == len(chunks) - 1:
+                            await channel.send(chunk, view=view)
+                        else:
+                            await channel.send(chunk)
+            else:
+                # Wywołanie z on_message
+                for i, chunk in enumerate(chunks):
+                    if i == len(chunks) - 1:
+                        await channel.send(chunk, view=view)
+                    else:
+                        await channel.send(chunk)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

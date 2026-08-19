@@ -12,11 +12,50 @@ from core.models import CharacterModel, QuestList, QuestItem, QuestObjective
 
 JSON_PATTERN = re.compile(r"<!--\s*DATA_JSON:\s*(.*?)\s*-->", re.DOTALL)
 
+# Mapowanie bitów na znaki Unicode o zerowej szerokości
+ZW_MAP = {'00': '\u200b', '01': '\u200c', '10': '\u200d', '11': '\u2060'}
+REV_ZW_MAP = {'\u200b': '00', '\u200c': '01', '\u200d': '10', '\u2060': '11'}
+ZW_START = "\u200b\u2060\u200b\u2060"
+ZW_END = "\u2060\u200b\u2060\u200b"
+ZW_PATTERN = re.compile(re.escape(ZW_START) + r"([\u200b\u200c\u200d\u2060]+)" + re.escape(ZW_END))
 
-def extract_data_from_text(text: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Wyciaga strukturalne dane JSON ukryte w komentarzu HTML posta lub opisu embedu."""
+
+def encode_zero_width_data(data: Dict[str, Any]) -> str:
+    """Koduje dowolny słownik JSON do niewidocznej sekwencji znaków o zerowej szerokości."""
+    json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    bits = "".join(f"{b:08b}" for b in json_bytes)
+    zw_chars = [ZW_MAP[bits[i:i+2]] for i in range(0, len(bits), 2)]
+    return ZW_START + "".join(zw_chars) + ZW_END
+
+
+def decode_zero_width_data(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Odkodowuje słownik JSON ukryty w sekwencji znaków o zerowej szerokości."""
     if not text:
         return None
+    match = ZW_PATTERN.search(text)
+    if not match:
+        return None
+    try:
+        zw_payload = match.group(1)
+        bits = "".join(REV_ZW_MAP[c] for c in zw_payload if c in REV_ZW_MAP)
+        if len(bits) % 8 != 0:
+            return None
+        byte_list = bytearray(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
+        return json.loads(byte_list.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def extract_data_from_text(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Wyciaga strukturalne dane JSON ukryte w znakach zero-width lub komentarzu HTML posta/embedu."""
+    if not text:
+        return None
+    # 1. Sprawdź niewidoczny payload Zero-Width
+    zw_data = decode_zero_width_data(text)
+    if zw_data is not None:
+        return zw_data
+
+    # 2. Sprawdź tradycyjny komentarz HTML <!-- DATA_JSON: ... -->
     match = JSON_PATTERN.search(text)
     if match:
         try:
@@ -31,7 +70,8 @@ extract_json_from_message = extract_data_from_text
 
 def inject_data_into_text(base_text: str, data: Dict[str, Any]) -> str:
     """Wstrzykuje lub aktualizuje ukryty blok danych JSON na koncu tekstu."""
-    clean_text = JSON_PATTERN.sub("", base_text or "").strip()
+    clean_text = ZW_PATTERN.sub("", base_text or "")
+    clean_text = JSON_PATTERN.sub("", clean_text).strip()
     json_str = json.dumps(data, ensure_ascii=False)
     if clean_text:
         return f"{clean_text}\n\n<!-- DATA_JSON: {json_str} -->"
@@ -76,10 +116,14 @@ def create_health_bar(current: int, max_val: int, length: int = 10) -> str:
 
 
 def build_character_sheet_embed(char: CharacterModel) -> discord.Embed:
-    """Generuje estetyczny embed karty postaci z paskiem zycia i ukrytym DATA_JSON."""
+    """Generuje estetyczny embed karty postaci z paskiem zycia, czystym opisem i ukrytym DATA_JSON."""
+    clean_desc = (char.backstory or char.bio or "").strip()
+    zw_payload = encode_zero_width_data(char.model_dump())
+    full_desc = f"{clean_desc}\n{zw_payload}".strip() if clean_desc else zw_payload
+
     embed = discord.Embed(
         title=f"🛡️ {char.name} – Poziom {char.level} {char.race} {char.character_class}",
-        description=inject_data_into_text("", char.model_dump()),
+        description=full_desc,
         color=discord.Color.dark_teal()
     )
     if char.avatar_url:
@@ -108,6 +152,21 @@ def build_character_sheet_embed(char: CharacterModel) -> discord.Embed:
     if char.inventory:
         inv_items = [f"• {item.name} (x{item.quantity})" for item in char.inventory]
         embed.add_field(name="🎒 Ekwipunek", value="\n".join(inv_items[:10]), inline=False)
+
+    # Komórki czarów jeśli postać posiada
+    slots = char.spell_slots
+    if slots.level_1_max > 0 or slots.level_2_max > 0 or slots.level_3_max > 0:
+        slot_lines = []
+        if slots.level_1_max > 0:
+            slot_lines.append(f"Poz. 1: {'🔷' * slots.level_1}{'🔘' * (slots.level_1_max - slots.level_1)} ({slots.level_1}/{slots.level_1_max})")
+        if slots.level_2_max > 0:
+            slot_lines.append(f"Poz. 2: {'🔷' * slots.level_2}{'🔘' * (slots.level_2_max - slots.level_2)} ({slots.level_2}/{slots.level_2_max})")
+        if slots.level_3_max > 0:
+            slot_lines.append(f"Poz. 3: {'🔷' * slots.level_3}{'🔘' * (slots.level_3_max - slots.level_3)} ({slots.level_3}/{slots.level_3_max})")
+        embed.add_field(name="✨ Komórki Czarów", value="\n".join(slot_lines), inline=False)
+
+    if char.spells:
+        embed.add_field(name="📜 Znane Czary / Sztuczki", value=", ".join(f"`{sp}`" for sp in char.spells), inline=False)
 
     if char.conditions:
         embed.add_field(name="⚠️ Aktywne Stany", value=", ".join(f"`{c}`" for c in char.conditions), inline=False)

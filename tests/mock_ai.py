@@ -46,6 +46,7 @@ class MockGeminiClient:
             {"label": "Rzut na Percepcję (WIS +2)", "formula": "1d20+2", "reason": "Percepcja", "dc": 13}
         ]
         self._queued_responses: List[Tuple[str, Optional[List[Dict[str, Any]]]]] = []
+        self._queued_character_responses: List[Dict[str, Any]] = []
         self._injected_errors: List[Exception] = []
         self._custom_handler: Optional[Callable[[str, Optional[str]], Tuple[str, List[Dict[str, Any]]]]] = None
         
@@ -62,6 +63,14 @@ class MockGeminiClient:
         """Queues a sequential response for upcoming calls."""
         self._queued_responses.append((text, action_buttons))
 
+    def queue_character_response(self, char_data: Union[Dict[str, Any], str]) -> None:
+        """Queues a character response for generate_character calls."""
+        if isinstance(char_data, str):
+            parsed = json.loads(char_data)
+            self._queued_character_responses.append(parsed)
+        else:
+            self._queued_character_responses.append(char_data)
+
     def inject_error(self, exc: Exception) -> None:
         """Queues an exception to be raised on the next call."""
         self._injected_errors.append(exc)
@@ -73,6 +82,7 @@ class MockGeminiClient:
     def reset(self) -> None:
         """Clears all queued responses, errors, and call history."""
         self._queued_responses.clear()
+        self._queued_character_responses.clear()
         self._injected_errors.clear()
         self._custom_handler = None
         self.call_history.clear()
@@ -116,6 +126,7 @@ class MockGeminiClient:
         """Simulates async generation of DM narrative response and action buttons."""
         # 1. Audit call
         self.call_history.append({
+            "type": "narrative",
             "context_prompt": context_prompt,
             "system_prompt": system_prompt
         })
@@ -142,6 +153,44 @@ class MockGeminiClient:
         clean_text, parsed_btns = self.extract_action_buttons(self.default_response)
         buttons = parsed_btns if parsed_btns else self.default_action_buttons
         return clean_text, buttons
+
+    async def generate_character(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Simulates async generation of structured D&D 5e character JSON."""
+        # 1. Audit call
+        self.call_history.append({
+            "type": "character",
+            "prompt": prompt,
+            "system_prompt": system_prompt
+        })
+
+        # 2. Check injected error
+        if self._injected_errors:
+            err = self._injected_errors.pop(0)
+            raise err
+
+        # 3. Check queued character response
+        if self._queued_character_responses:
+            return self._queued_character_responses.pop(0)
+
+        # 4. Check general queued responses if contains JSON
+        if self._queued_responses:
+            text, _ = self._queued_responses.pop(0)
+            try:
+                clean = text.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```(?:json)?\s*", "", clean)
+                    clean = re.sub(r"\s*```$", "", clean)
+                return json.loads(clean)
+            except Exception:
+                pass
+
+        # 5. Fallback deterministic character
+        from ai.gemini_client import GeminiClient
+        return GeminiClient()._generate_offline_character(prompt)
 
 
 def split_long_message(text: str, limit: int = 1900) -> List[str]:

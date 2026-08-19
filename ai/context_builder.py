@@ -72,47 +72,69 @@ async def fetch_messages_since_last_dm_response(
     guild: Optional[discord.Guild] = None
 ) -> str:
     """
-    Pobiera wszystkie wypowiedzi graczy oraz rzuty kośćmi (embedy) od ostatniej odpowiedzi bota.
-    Filtruje czat OOC ((...)) i zachowuje porządek chronologiczny.
+    Pobiera poprzednią narrację bota oraz wszystkie nowe wypowiedzi graczy i rzuty kośćmi (embedy) od tamtej pory.
+    Filtruje czat OOC ((...)), rozpoznaje rzuty kośćmi wysyłane przez bota i zachowuje porządek chronologiczny.
     """
-    last_bot_message = None
-
-    # 1. Skanowanie wstecz w poszukiwaniu ostatniej wiadomości bota na stole gry
+    # 1. Pobranie ostatnich wiadomości ze stołu gry
+    messages: List[discord.Message] = []
     try:
-        async for msg in channel.history(limit=50):
-            if msg.author.id == bot_user.id:
-                last_bot_message = msg
-                break
+        if hasattr(channel, "history"):
+            async for msg in channel.history(limit=30, oldest_first=False):
+                messages.append(msg)
     except Exception:
         pass
 
-    # 2. Pobranie wiadomości PO ostatniej odpowiedzi bota (chronologicznie od najstarszej)
-    new_events: List[str] = []
-    history_iterator = (
-        channel.history(limit=30, after=last_bot_message, oldest_first=True)
-        if last_bot_message
-        else channel.history(limit=15, oldest_first=True)
-    )
+    # Ułożenie w porządku chronologicznym (od najstarszej do najnowszej)
+    messages.reverse()
 
-    async for msg in history_iterator:
-        # Pomiń wiadomości wysłane przez bota
-        if msg.author.id == bot_user.id:
-            continue
+    # 2. Wyszukanie ostatniej wiadomości NARRACYJNEJ bota (z wykluczeniem rzutów kośćmi)
+    last_story_msg_index = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if bot_user and msg.author.id == bot_user.id:
+            # Sprawdź czy to rzut kością
+            is_roll = False
+            if getattr(msg, "embeds", None):
+                for emb in msg.embeds:
+                    if await parse_dice_roll_embed(emb) is not None:
+                        is_roll = True
+                        break
+            if not is_roll and msg.content and len(msg.content.strip()) > 0:
+                last_story_msg_index = i
+                break
 
-        # A. Deklaracja tekstowa gracza
-        if not getattr(msg.author, "bot", False) and msg.content and msg.content.strip():
-            if is_ooc_message(msg.content):
-                continue
-            new_events.append(f"[{msg.author.display_name}]: {msg.content.strip()}")
+    events_list: List[str] = []
 
-        # B. Embed z rzutem kością na stole gry
+    # Jeśli odnaleziono poprzednią narrację Mistrza Gry, dołączamy ją do kontekstu
+    if last_story_msg_index != -1:
+        prev_story = messages[last_story_msg_index].content.strip()
+        if len(prev_story) > 600:
+            prev_story = prev_story[:600] + "..."
+        events_list.append(f"[POPRZEDNIA NARRACJA MISTRZA GRY]:\n\"{prev_story}\"\n")
+        relevant_messages = messages[last_story_msg_index + 1:]
+    else:
+        relevant_messages = messages
+
+    # 3. Parsowanie nowych zdarzeń (rzutów kośćmi i deklaracji graczy)
+    for msg in relevant_messages:
+        # A. Embed z rzutem kością (może pochodzić z interakcji bota lub gracza)
         if getattr(msg, "embeds", None):
             for embed in msg.embeds:
                 parsed_roll = await parse_dice_roll_embed(embed)
-                if parsed_roll:
-                    new_events.append(parsed_roll)
+                if parsed_roll and parsed_roll not in events_list:
+                    events_list.append(parsed_roll)
 
-    # 3. Sprawdzenie dedykowanego kanału rzutów kośćmi (#rzuty-kości / #rzuty-kostkami), jeśli istnieje
+        # B. Deklaracja tekstowa gracza
+        if not getattr(msg.author, "bot", False) and msg.content and msg.content.strip():
+            if is_ooc_message(msg.content):
+                continue
+            clean_content = msg.content
+            if bot_user:
+                clean_content = clean_content.replace(f"<@{bot_user.id}>", "").replace(f"<@!{bot_user.id}>", "").replace("@Mistrz Gry", "").replace("@MistrzGry", "").replace("@DM", "").strip()
+            if clean_content:
+                events_list.append(f"[{msg.author.display_name}]: {clean_content}")
+
+    # 4. Sprawdzenie dedykowanego kanału rzutów kośćmi (#rzuty-kości / #rzuty-kostkami), jeśli istnieje
     target_guild = guild or getattr(channel, "guild", None)
     if target_guild:
         dice_ch = None
@@ -122,23 +144,22 @@ async def fetch_messages_since_last_dm_response(
                 dice_ch = ch
                 break
 
-        if dice_ch:
+        if dice_ch and hasattr(dice_ch, "history"):
             try:
-                dice_iter = (
-                    dice_ch.history(limit=15, after=last_bot_message, oldest_first=True)
-                    if last_bot_message
-                    else dice_ch.history(limit=10, oldest_first=True)
-                )
-                async for dmsg in dice_iter:
+                dice_messages: List[discord.Message] = []
+                async for dmsg in dice_ch.history(limit=10, oldest_first=False):
+                    dice_messages.append(dmsg)
+                dice_messages.reverse()
+                for dmsg in dice_messages:
                     if getattr(dmsg, "embeds", None):
                         for embed in dmsg.embeds:
                             parsed_roll = await parse_dice_roll_embed(embed)
-                            if parsed_roll and parsed_roll not in new_events:
-                                new_events.append(parsed_roll)
+                            if parsed_roll and parsed_roll not in events_list:
+                                events_list.append(parsed_roll)
             except Exception:
                 pass
 
-    return "\n".join(new_events)
+    return "\n".join(events_list)
 
 
 async def fetch_campaign_rules(guild_or_channel: Union[discord.Guild, discord.TextChannel]) -> str:
@@ -217,6 +238,54 @@ async def fetch_active_characters(guild: discord.Guild) -> List[Dict[str, Any]]:
     return characters
 
 
+async def fetch_campaign_lore_and_chronicle(guild: Optional[discord.Guild]) -> str:
+    """
+    Odczytuje wpisy encyklopedyczne z forum #kompendium-i-lore oraz ostatnie wpisy z #kronika-przygod.
+    """
+    if not guild:
+        return ""
+
+    lore_snippets: List[str] = []
+
+    # 1. Odczyt z kanału #kronika-przygod
+    for ch in getattr(guild, "text_channels", []):
+        if "kronika" in normalize_channel_name(ch.name):
+            try:
+                if hasattr(ch, "pins"):
+                    pins = await ch.pins()
+                    if pins and getattr(pins[0], "content", None):
+                        lore_snippets.append(f"📖 **Ostatnie wydarzenia z Kroniki:**\n{pins[0].content}")
+                if not lore_snippets and hasattr(ch, "history"):
+                    async for msg in ch.history(limit=2, oldest_first=False):
+                        if getattr(msg, "content", None):
+                            lore_snippets.append(f"📖 **Kronika:**\n{msg.content[:400]}")
+                            break
+            except Exception:
+                pass
+            break
+
+    # 2. Odczyt wątków z forum #kompendium-i-lore
+    forums = getattr(guild, "forums", [])
+    if not forums and hasattr(guild, "channels"):
+        forums = [c for c in guild.channels if isinstance(c, getattr(discord, "ForumChannel", type(None)))]
+    for forum in forums:
+        if "kompendium" in normalize_channel_name(forum.name) or "lore" in normalize_channel_name(forum.name):
+            try:
+                threads = await _get_all_forum_threads(forum)
+                topics = []
+                for th in threads[:5]:
+                    starter = getattr(th, "starter_message", None)
+                    content = starter.content[:200] if starter and getattr(starter, "content", None) else ""
+                    topics.append(f"• **{th.name}**: {content}" if content else f"• **{th.name}**")
+                if topics:
+                    lore_snippets.append("🏛️ **Znane Lokacje i Lore z Kompendium:**\n" + "\n".join(topics))
+            except Exception:
+                pass
+            break
+
+    return "\n\n".join(lore_snippets)
+
+
 async def build_full_dm_context(
     guild: discord.Guild,
     table_channel: discord.TextChannel,
@@ -226,7 +295,7 @@ async def build_full_dm_context(
     """
     Zbiera pełen 4-warstwowy stan kampanii z Discorda i przygotowuje prompty dla Gemini:
     - Warstwa 1: System Persona (DM Prompt + instrukcje przycisków akcji)
-    - Warstwa 2: Live Rules z #zasady-i-mechanika
+    - Warstwa 2: Live Rules z #zasady-i-mechanika + Lore z #kompendium-i-lore + #kronika-przygod
     - Warstwa 3: Karty postaci z forum #karty-postaci
     - Warstwa 4: Historia wypowiedzi i rzutów z #stół-gry
 
@@ -236,6 +305,10 @@ async def build_full_dm_context(
     from ai.gemini_client import build_4layer_prompt
 
     rules = await fetch_campaign_rules(guild)
+    lore = await fetch_campaign_lore_and_chronicle(guild)
+    if lore:
+        rules = f"{rules}\n\n=== [ENCYKLOPEDIA I KRONIKA ŚWIATA] ===\n{lore}"
+
     characters = await fetch_active_characters(guild)
     events = await fetch_messages_since_last_dm_response(table_channel, bot_user, guild=guild)
 

@@ -4,14 +4,18 @@ import discord
 
 from core.models import CharacterModel, QuestModel, QuestList, CombatState, DiceRollResult
 from mechanics.dice import create_health_bar
-from core.discord_db import inject_data_into_text, build_quest_board_embed
+from core.discord_db import inject_data_into_text, build_quest_board_embed, encode_zero_width_data
 
 
 def create_character_sheet_embed(char: CharacterModel) -> discord.Embed:
-    """Generuje estetyczny embed karty postaci z paskiem zdrowia ASCII i ukrytym DATA_JSON."""
+    """Generuje estetyczny embed karty postaci z paskiem zdrowia ASCII, czystym opisem i ukrytym DATA_JSON."""
+    clean_desc = (char.backstory or char.bio or "").strip()
+    zw_payload = encode_zero_width_data(char.model_dump())
+    full_desc = f"{clean_desc}\n{zw_payload}".strip() if clean_desc else zw_payload
+
     embed = discord.Embed(
         title=f"🛡️ {char.name} – Poziom {char.level} {char.race} {char.character_class}",
-        description=inject_data_into_text("", char.model_dump()),
+        description=full_desc,
         color=discord.Color.dark_teal()
     )
     if char.avatar_url:
@@ -59,6 +63,9 @@ def create_character_sheet_embed(char: CharacterModel) -> discord.Embed:
         if slots.level_3_max > 0:
             slot_lines.append(f"Poz. 3: {'🔷' * slots.level_3}{'🔘' * (slots.level_3_max - slots.level_3)} ({slots.level_3}/{slots.level_3_max})")
         embed.add_field(name="✨ Komórki Czarów", value="\n".join(slot_lines), inline=False)
+
+    if char.spells:
+        embed.add_field(name="📜 Znane Czary / Sztuczki", value=", ".join(f"`{sp}`" for sp in char.spells), inline=False)
 
     if char.conditions:
         embed.add_field(name="⚠️ Aktywne Stany", value=", ".join(f"`{c}`" for c in char.conditions), inline=False)
