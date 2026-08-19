@@ -19,6 +19,9 @@
 | F7 | `/generate-character <prompt>` Slash Command (R3) | Slash command in `commands/character_cog.py` generating full D&D 5e character from prompt, provisioning `#karty-postaci` forum thread, and displaying clean embed | M3 | ORIGINAL_REQUEST §R3 |
 | F8 | `/character-edit` Slash Command & Audit Logging (R4) | Slash command in `commands/character_cog.py` allowing selective updates to name, stats, max_hp, ac, speed, backstory without corrupting inventory/gold, logging changes to forum thread history | M4 | ORIGINAL_REQUEST §R4 |
 | F9 | Comprehensive Test Suite & Regression Verification | Comprehensive test suite covering R1, R2, R3, R4 across all tiers, ensuring 100% pass rate on all 317+ existing tests and new feature tests | M5 | ORIGINAL_REQUEST §Verification |
+| F10 | Multi-Turn Rolling Scene Memory & Dice Embed Ingestion | Multi-turn rolling scene history, automatic ingestion of interactive button dice rolls, and previous narrative scene continuity | M6 | Gameplay Experience Enhancement |
+| F11 | Chronicler Session Recap & Lore Integration (`/kronika`) | Add `/kronika` command with `LAST_MSG_ID` anchor deduplication and dynamic feeding of `#kompendium-i-lore` & `#kronika-przygód` into Layer 2 Prompt | M6 | Gameplay Experience Enhancement |
+| F12 | Multi-Model Fallback Chain & Concurrency Locking | Implement cascade fallback (`gemini-3.7-flash` -> `gemini-3.5-flash` -> `gemini-3.5-flash-lite` -> `gemini-2.5-flash`) on 503/429 errors and per-channel `asyncio.Lock` | M6 | Robustness & Reliability |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
@@ -28,6 +31,7 @@
 | M3 | AI Character Generator (`/generate-character`) | Implement `CHARACTER_GENERATOR_SYSTEM_PROMPT`, `GeminiClient.generate_character()`, `MockGeminiClient` update, and `/generate-character` command | M1 | DONE |
 | M4 | Character Editor & Audit Logging (`/character-edit`) | Implement `/character-edit` command with selective field mutations, non-destructive updates, and forum thread audit logging | M1, M2 | DONE |
 | M5 | Full Verification & Integration Hardening | Multi-tier test suite (Tiers 1-4) for all new commands + Adversarial review & Challenger testing + Forensic Integrity Audit | M1, M2, M3, M4 | DONE |
+| M6 | Scene Memory, Chronicler & Fallback Resilience | Multi-turn rolling scene context, button roll capture, `/kronika` deduplication, compendium lore injection, multi-model fallback chain | M1, M5 | DONE |
 
 ## Interface Contracts
 ### `core/models.py` ↔ `discord_ui/embeds.py` / `core/discord_db.py`

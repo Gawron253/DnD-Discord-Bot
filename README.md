@@ -76,10 +76,12 @@ Po wpisaniu komendy `/setup-campaign`, bot automatycznie i bezpiecznie (idempote
 * `/roll <expression> [dc] [secret]` – Rzut kośćmi (np. `/roll 1d20+5 dc:14`, `/roll 4d6kh3`, `/roll 2d20kl1+3`).
 * `/quest <action: create|complete|list> [title] [description] [reward] [quest_id]` – Zarządzanie zadaniami.
 * `/zasady` – Wyświetlenie aktualnych zasad kampanii z kanału `#zasady-i-mechanika`.
+* `/kronika` – Generuje epickie podsumowanie minionego rozdziału ze stołu gry (Nadworny Kronikarz AI) z kotwicą anty-duplikacyjną (`LAST_MSG_ID`) i zapisuje je w `#kronika-przygód`.
 
 ### 🎭 Komendy Narracyjne i AI:
-* `@Mistrz Gry <treść>` na `#stół-gry` – Wywołanie AI do wygenerowania kolejnej tury narracji na podstawie zdarzeń od poprzedniej odpowiedzi bota.
+* `@Mistrz Gry <treść>` na `#stół-gry` – Wywołanie AI do wygenerowania kolejnej tury narracji na podstawie zdarzeń, dialogów i wyników rzutów.
 * `/next` na `#stół-gry` – Wymuszenie wygenerowania tury narracyjnej przez komendę slash.
+* **Auto-Retry & Multi-Model Fallback**: W przypadku przeciążenia serwerów (`503 / 429`), bot automatycznie ponawia próbę i przełącza się kaskadowo: `gemini-3.7-flash` ➔ `gemini-3.5-flash` ➔ `gemini-3.5-flash-lite` ➔ `gemini-2.5-flash`.
 
 ---
 
